@@ -1,0 +1,12 @@
+Name:                suffixtree
+Version:             0.1
+Description:         A suffix tree implementation
+License:             BSD3
+License-File:        LICENSE
+Author:              Bryan O'Sullivan <bos@serpentine.com>
+Maintainer:          bos@serpentine.com
+Build-Depends:       base, QuickCheck
+-- add fps for ghc 6.4.2
+Exposed-modules:     Data.SuffixTree
+ghc-options:         -W -O2 -optc-O3 -funbox-strict-fields
+
