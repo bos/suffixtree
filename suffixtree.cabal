@@ -1,10 +1,13 @@
 Name:                suffixtree
 Version:             0.1
-Description:         An efficient, lazy suffix tree implementation
+Synopsis:            Efficient, lazy suffix tree implementation
+Description:         An efficient, lazy suffix tree implementation.
+Category:            Data
 License:             BSD3
 License-File:        LICENSE
 Author:              Bryan O'Sullivan <bos@serpentine.com>
 Maintainer:          bos@serpentine.com
+Homepage:            http://www.serpentine.com/software/suffixtree/
 Build-Depends:       base, QuickCheck
 -- add fps for ghc 6.4.2
 Exposed-modules:     Data.SuffixTree
