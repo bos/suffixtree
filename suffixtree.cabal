@@ -1,8 +1,8 @@
 Name:                suffixtree
-Version:             0.2
+Version:             0.2.1
 Synopsis:            Efficient, lazy suffix tree implementation
 Description:         An efficient, lazy suffix tree implementation.
-Category:            Data
+Category:            Data Structures, Data
 License:             BSD3
 License-File:        LICENSE
 Author:              Bryan O'Sullivan <bos@serpentine.com>
