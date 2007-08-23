@@ -1,5 +1,5 @@
 Name:                suffixtree
-Version:             0.1
+Version:             0.2
 Synopsis:            Efficient, lazy suffix tree implementation
 Description:         An efficient, lazy suffix tree implementation.
 Category:            Data
@@ -8,8 +8,11 @@ License-File:        LICENSE
 Author:              Bryan O'Sullivan <bos@serpentine.com>
 Maintainer:          bos@serpentine.com
 Homepage:            http://www.serpentine.com/software/suffixtree/
-Build-Depends:       base, QuickCheck
 -- add fps for ghc 6.4.2
+Build-Depends:       base, QuickCheck
 Exposed-modules:     Data.SuffixTree
 ghc-options:         -W -O2 -optc-O3 -funbox-strict-fields -fno-warn-incomplete-patterns
-
+extra-source-files:  Makefile
+                     examples/Makefile
+                     examples/Tiny.hs
+                     examples/UniqueMatch.hs
