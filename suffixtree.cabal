@@ -1,5 +1,5 @@
 Name:                suffixtree
-Version:             0.2.2
+Version:             0.2.2.1
 Synopsis:            Efficient, lazy suffix tree implementation
 Description:         An efficient, lazy suffix tree implementation.
 Category:            Data Structures, Data
@@ -7,35 +7,25 @@ License:             BSD3
 License-File:        LICENSE
 Author:              Bryan O'Sullivan <bos@serpentine.com>
 Maintainer:          bos@serpentine.com
-Homepage:            http://www.serpentine.com/software/suffixtree/
+Homepage:            https://github.com/bos/suffixtree
+Bug-Reports:         https://github.com/bos/suffixtree/issues
 Build-Type:          Simple
-Cabal-Version:       >= 1.2
-Extra-Source-Files:  Makefile
-                     examples/Makefile
+Cabal-Version:       >= 1.6
+Extra-Source-Files:  examples/Makefile
                      examples/Tiny.hs
                      examples/UniqueMatch.hs
 
-Flag bytestring-in-base
-  Description: Is ByteString in the base or bytestring package?
-  Default: False
-
-Flag split-base
-  Description: Has the base package been split up?
-  Default: True
-
 Library
-  if flag(bytestring-in-base)
-    -- bytestring was in base-2.0 and 2.1.1
-    Build-Depends: base >= 2.0 && < 2.2
-  else
-    -- in base 1.0 and 3.0, bytestring is a separate package
-    Build-Depends: base < 2.0 || >= 3, bytestring >= 0.9
-
-  if flag(split-base)
-    Build-Depends: base >= 3.0, containers
-  else
-    Build-Depends: base < 3.0
-
-  Build-Depends:     QuickCheck
+  Build-Depends:     base >= 3 && < 5,
+                     bytestring,
+                     containers
   Exposed-Modules:   Data.SuffixTree
-  GHC-Options:       -Wall -O2 -funbox-strict-fields -fno-warn-incomplete-patterns
+  GHC-Options:       -Wall -funbox-strict-fields -fno-warn-incomplete-patterns
+
+source-repository head
+  type:     git
+  location: https://github.com/bos/suffixtree
+
+source-repository head
+  type:     mercurial
+  location: https://bitbucket.org/bos/suffixtree
