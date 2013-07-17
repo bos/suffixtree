@@ -307,7 +307,7 @@ elem xs (Node es) = any pfx es
 --
 -- Here is an example:
 --
--- >> find "ssip" (construct "mississippi")
+-- >> findEdge "ssip" (construct "mississippi")
 -- >Just ((mkPrefix "ppi",Leaf),1)
 --
 -- This indicates that the edge @('mkPrefix' \"ppi\",'Leaf')@ matches,
