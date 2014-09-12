@@ -22,6 +22,21 @@ Library
   Exposed-Modules:   Data.SuffixTree
   GHC-Options:       -Wall -funbox-strict-fields -fno-warn-incomplete-patterns
 
+test-suite tests
+  type:           exitcode-stdio-1.0
+  hs-source-dirs: tests .
+  main-is:        SuffixCheck.hs
+  other-modules:  Data.SuffixTree
+
+  ghc-options:    -Wall
+
+  build-depends:
+    QuickCheck >=1.2 && < 2.0,
+    base,
+    test-framework >= 0.4,
+    test-framework-quickcheck
+
+
 source-repository head
   type:     git
   location: https://github.com/bos/suffixtree
