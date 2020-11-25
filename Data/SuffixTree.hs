@@ -98,7 +98,7 @@ instance (Ord a) => Ord (Prefix a) where
 instance (Show a) => Show (Prefix a) where
     show a = "mkPrefix " ++ show (prefix a)
 
-type EdgeFunction a = [[a]] -> (Length a, [[a]])
+type EdgeFunction a = [([a], Int)] -> (Length a, [([a], Int)])
 
 -- | An edge in the suffix tree.
 type Edge a = (Prefix a, STree a)
@@ -117,11 +117,11 @@ instance Functor Prefix where
 -- development of custom traversal functions.  Note that @('Prefix' a,
 -- 'STree' a)@ pairs are not stored in any order.
 data STree a = Node [Edge a]
-             | Leaf
+             | Leaf Int
                deriving (Show)
 
 smap :: (a -> b) -> STree a -> STree b
-smap _ Leaf = Leaf
+smap _ (Leaf n) = Leaf n
 smap f (Node es) = Node (map (\(p, t) -> (fmap f p, smap f t)) es)
 
 instance Functor STree where
@@ -137,7 +137,7 @@ prefix (Prefix (ys, Sum n xs)) = tk n ys
 -- | /O(t)/. Folds the edges in a tree, using post-order traversal.
 -- Suitable for lazy use.
 foldr :: (Prefix a -> b -> b) -> b -> STree a -> b
-foldr _ z Leaf = z
+foldr _ z (Leaf n) = z
 foldr f z (Node es) = L.foldr (\(p,t) v -> f p (foldr f v t)) z es
 
 -- | /O(t)/. Folds the edges in a tree, using pre-order traversal.  The
@@ -146,7 +146,7 @@ foldl :: (a -> Prefix b -> a)   -- ^ step function (evaluated strictly)
       -> a                      -- ^ initial state
       -> STree b
       -> a
-foldl _ z Leaf = z
+foldl _ z (Leaf n) = z
 foldl f z (Node es) = L.foldl' (\v (p,t) -> f (foldl f v t) p) z es
 
 -- | /O(t)/. Generic fold over a tree.
@@ -177,12 +177,12 @@ foldl f z (Node es) = L.foldl' (\v (p,t) -> f (foldl f v t) p) z es
 fold :: (a -> a)                -- ^ downwards state transformer
      -> (a -> a)                -- ^ upwards state transformer
      -> (Prefix b -> a -> a -> a) -- ^ edge state transformer
-     -> (a -> a)                -- ^ leaf state transformer
+     -> (a -> Int -> a)                -- ^ leaf state transformer
      -> a                       -- ^ initial state
      -> STree b                 -- ^ tree
      -> a
 fold fdown fup fprefix fleaf = go
-    where go v Leaf = fleaf v
+    where go v (Leaf n) = fleaf v n
           go v (Node es) = fup (L.foldr edge v es)
           edge (p, t) v = fprefix p (go (fdown v) t) v
 
@@ -192,13 +192,13 @@ inc (Exactly n) = Exactly (n+1)
 inc (Sum n xs)  = Sum (n+1) xs
 
 lazyTreeWith :: (Eq a) => EdgeFunction a -> Alphabet a -> [a] -> STree a
-lazyTreeWith edge alphabet = suf . suffixes
-    where suf [[]] = Leaf
+lazyTreeWith edge alphabet = suf . (`zip` [0..]) . suffixes
+    where suf [([], j)] = (Leaf j)
           suf ss = Node [(Prefix (a:sa, inc cpl), suf ssr)
                          | a <- alphabet,
-                           n@(sa:_) <- [ss `clusterBy` a],
+                           n@((sa,j):_) <- [ss `clusterBy` a],
                            (cpl,ssr) <- [edge n]]
-          clusterBy ss a = [cs | c:cs <- ss, c == a]
+          clusterBy ss a = [(cs,j) | (c:cs,j) <- ss, c == a]
 
 -- | /O(n)/. Returns all non-empty suffixes of the argument, longest
 -- first.  Behaves as follows:
@@ -209,36 +209,37 @@ suffixes xs@(_:xs') = xs : suffixes xs'
 suffixes _ = []
 
 lazyTree :: (Ord a) => EdgeFunction a -> [a] -> STree a
-lazyTree edge = suf . suffixes
-    where suf [[]] = Leaf
+lazyTree edge = suf . (`zip` [0..]) . suffixes 
+    where suf [([], j)] = Leaf j
           suf ss = Node [(Prefix (a:sa, inc cpl), suf ssr)
-                         | (a, n@(sa:_)) <- suffixMap ss,
+                         | (a, n@((sa, j):_)) <- suffixMap ss,
                            (cpl,ssr) <- [edge n]]
 
-suffixMap :: Ord a => [[a]] -> [(a, [[a]])]
-suffixMap = map (second reverse) . M.toList . L.foldl' step M.empty
-    where step m (x:xs) = M.alter (f xs) x m
+suffixMap :: Ord a => [([a], Int)] -> [(a, [([a], Int)])]
+suffixMap =  map (second reverse) . M.toList . L.foldl' step M.empty
+    where step :: Ord a => M.Map a [([a], Int)] -> ([a], Int) -> M.Map a [([a], Int)] 
+          step m (x:xs,j) = M.alter (f j xs) x m
           step m _ = m
-          f x Nothing = Just [x]
-          f x (Just xs) = Just (x:xs)
+          f j x Nothing = Just [(x, j)]
+          f j x (Just xs) = Just ((x,j):xs)
 
 cst :: Eq a => EdgeFunction a
-cst [s] = (Sum 0 s, [[]])
-cst awss@((a:w):ss)
-    | null [c | c:_ <- ss, a /= c] = let cpl' = inc cpl
-                                     in seq cpl' (cpl', rss)
+cst [(s, j)] = (Sum 0 s, [([], j)])
+cst awss@((a:w,j):ss)
+    | null [c | (c:_,_) <- ss, a /= c] = let cpl' = inc cpl
+                                         in seq cpl' (cpl', rss)
     | otherwise = (Exactly 0, awss)
-    where (cpl, rss) = cst (w:[u | _:u <- ss])
+    where (cpl, rss) = cst ((w,j):[(u,j') | (_:u,j') <- ss])
 
 pst :: Eq a => EdgeFunction a
 pst = g . dropNested
-    where g [s] = (Sum 0 s, [[]])
+    where g [(s,j)] = (Sum 0 s, [([], j)])
           g ss  = (Exactly 0, ss)
           dropNested ss@[_] = ss
-          dropNested awss@((a:w):ss)
-              | null [c | c:_ <- ss, a /= c] = [a:s | s <- rss]
+          dropNested awss@((a:w,j):ss)
+              | null [c | ((c:_),_) <- ss, a /= c] = [(a:s,j') | (s,j') <- rss]
               | otherwise = awss
-              where rss = dropNested (w:[u | _:u <- ss])
+              where rss = dropNested ((w,j):[(u,j') | (_:u,j') <- ss])
 
 {-# SPECIALISE constructWith :: [Char] -> [Char] -> STree Char #-}
 {-# SPECIALISE constructWith :: [[Char]] -> [[Char]] -> STree [Char] #-}
@@ -283,7 +284,7 @@ suffix _ xs = Just xs
 -- sublist.
 elem :: (Eq a) => [a] -> STree a -> Bool
 elem [] _ = True
-elem _ Leaf = False
+elem _ (Leaf _) = False
 elem xs (Node es) = any pfx es
     where pfx (e, t) = maybe False (`elem` t) (suffix (prefix e) xs)
 
@@ -315,7 +316,7 @@ elem xs (Node es) = any pfx es
 --
 -- Performance is linear in the length /n/ of the query list.
 findEdge :: (Eq a) => [a] -> STree a -> Maybe (Edge a, Int)
-findEdge _ Leaf = Nothing
+findEdge _ (Leaf _) = Nothing
 findEdge xs (Node es) = listToMaybe (mapMaybe pfx es)
     where pfx e@(p, t) = let p' = prefix p
                          in suffix p' xs >>= \suf ->
@@ -337,7 +338,7 @@ findTree s t = (snd . fst) `fmap` findEdge s t
 -- Performance is linear in the length of the query list.
 findPath :: (Eq a) => [a] -> STree a -> [Edge a]
 findPath = go []
-    where go _ _ Leaf = []
+    where go _ _ (Leaf _) = []
           go me xs (Node es) = pfx me es
               where pfx _ [] = []
                     pfx me (e@(p, t):es) =
@@ -350,7 +351,7 @@ findPath = go []
 --
 -- Performance is linear in the number /t/ of elements in the tree.
 countLeaves :: STree a -> Int
-countLeaves Leaf = 1
+countLeaves (Leaf _) = 1
 countLeaves (Node es) = L.foldl' (\v (_, t) -> countLeaves t + v) 0 es
 
 -- | /O(n + r)/. Count the number of times a sequence is repeated
