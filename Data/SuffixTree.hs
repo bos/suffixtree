@@ -67,6 +67,7 @@ module Data.SuffixTree
                    
 import Prelude hiding (elem, foldl, foldr)
 import qualified Data.Map as M
+import Data.Either (rights)
 import Control.Arrow (second)
 import qualified Data.ByteString as SB
 import qualified Data.ByteString.Lazy as LB
@@ -98,8 +99,11 @@ instance (Ord a) => Ord (Prefix a) where
 instance (Show a) => Show (Prefix a) where
     show a = "mkPrefix " ++ show (prefix a)
 
-type EdgeFunction a = [([a], Int)] -> (Length a, [([a], Int)])
+type EdgeFunction a = [Suffix a] -> (Length a, [Suffix a])
 
+type Suffix a = ([a], LeafValue)
+
+type LeafValue = (Int, Int)
 -- | An edge in the suffix tree.
 type Edge a = (Prefix a, STree a)
 
@@ -117,7 +121,7 @@ instance Functor Prefix where
 -- development of custom traversal functions.  Note that @('Prefix' a,
 -- 'STree' a)@ pairs are not stored in any order.
 data STree a = Node [Edge a]
-             | Leaf Int
+             | Leaf LeafValue
                deriving (Show)
 
 smap :: (a -> b) -> STree a -> STree b
@@ -177,7 +181,7 @@ foldl f z (Node es) = L.foldl' (\v (p,t) -> f (foldl f v t) p) z es
 fold :: (a -> a)                -- ^ downwards state transformer
      -> (a -> a)                -- ^ upwards state transformer
      -> (Prefix b -> a -> a -> a) -- ^ edge state transformer
-     -> (a -> Int -> a)                -- ^ leaf state transformer
+     -> (a -> LeafValue -> a)                -- ^ leaf state transformer
      -> a                       -- ^ initial state
      -> STree b                 -- ^ tree
      -> a
@@ -191,11 +195,22 @@ inc :: Length a -> Length a
 inc (Exactly n) = Exactly (n+1)
 inc (Sum n xs)  = Sum (n+1) xs
 
-lazyTreeWith :: (Eq a) => EdgeFunction a -> Alphabet a -> [a] -> STree a
-lazyTreeWith edge alphabet = suf . (`zip` [0..]) . suffixes
-    where suf [([], j)] = (Leaf j)
+removeEithers :: STree (Either Int a) -> STree a
+removeEithers (Leaf l) = Leaf l
+removeEithers (Node es) = Node $ map (\(p, t) -> (f p, removeEithers t)) es
+    where f = mkPrefix . rights . prefix
+
+terminatedSuffixes :: Int -> [a] -> [Suffix (Either Int a)]
+terminatedSuffixes n xs = zip (init . init . L.tails $ rs) ps
+    where ps = map (\i -> (n, i)) ([0..] :: [Int])
+          rs = map Right xs ++ [Left n]
+
+lazyTreeWith :: (Eq a) => EdgeFunction (Either Int a) -> Alphabet a -> [[a]] -> STree a
+lazyTreeWith edge alphabet xss = removeEithers . suf . concat . (zipWith terminatedSuffixes [0..]) $ xss
+    where alphabet' = map Right alphabet ++ (map Left [0..(length xss - 1)])
+          suf [([], j)] = (Leaf j)
           suf ss = Node [(Prefix (a:sa, inc cpl), suf ssr)
-                         | a <- alphabet,
+                         | a <- alphabet',
                            n@((sa,j):_) <- [ss `clusterBy` a],
                            (cpl,ssr) <- [edge n]]
           clusterBy ss a = [(cs,j) | (c:cs,j) <- ss, c == a]
@@ -208,16 +223,16 @@ suffixes :: [a] -> [[a]]
 suffixes xs@(_:xs') = xs : suffixes xs'
 suffixes _ = []
 
-lazyTree :: (Ord a) => EdgeFunction a -> [a] -> STree a
-lazyTree edge = suf . (`zip` [0..]) . suffixes 
+lazyTree :: (Ord a) => EdgeFunction (Either Int a) -> [[a]] -> STree a
+lazyTree edge = removeEithers . suf . concat . (zipWith terminatedSuffixes [0..])
     where suf [([], j)] = Leaf j
           suf ss = Node [(Prefix (a:sa, inc cpl), suf ssr)
                          | (a, n@((sa, j):_)) <- suffixMap ss,
                            (cpl,ssr) <- [edge n]]
 
-suffixMap :: Ord a => [([a], Int)] -> [(a, [([a], Int)])]
+suffixMap :: Ord a => [Suffix a] -> [(a, [Suffix a])]
 suffixMap =  map (second reverse) . M.toList . L.foldl' step M.empty
-    where step :: Ord a => M.Map a [([a], Int)] -> ([a], Int) -> M.Map a [([a], Int)] 
+    where step :: Ord a => M.Map a [Suffix a] -> Suffix a -> M.Map a [Suffix a] 
           step m (x:xs,j) = M.alter (f j xs) x m
           step m _ = m
           f j x Nothing = Just [(x, j)]
@@ -256,7 +271,10 @@ pst = g . dropNested
 -- more than a few symbols, 'construct' is usually several orders of
 -- magnitude faster.
 constructWith :: (Eq a) => Alphabet a -> [a] -> STree a
-constructWith = lazyTreeWith cst
+constructWith alphabet xs = lazyTreeWith cst alphabet [xs]
+
+constructGeneralWith :: (Eq a) => Alphabet a -> [[a]] -> STree a
+constructGeneralWith = lazyTreeWith cst
 
 {-# SPECIALISE construct :: [Char] -> STree Char #-}
 {-# SPECIALISE construct :: [[Char]] -> STree [Char] #-}
@@ -266,7 +284,10 @@ constructWith = lazyTreeWith cst
 
 -- | /O(n log n)/.  Constructs a suffix tree.
 construct :: (Ord a) => [a] -> STree a
-construct = lazyTree cst
+construct xs = lazyTree cst [xs]
+
+constructGeneral :: (Ord a) => [[a]] -> STree a
+constructGeneral = lazyTree cst
 
 suffix :: (Eq a) => [a] -> [a] -> Maybe [a]
 suffix (p:ps) (x:xs) | p == x = suffix ps xs
