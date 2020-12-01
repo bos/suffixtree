@@ -1,5 +1,4 @@
 {- Fastest when compiled as follows: ghc -O2 -optc-O3 -funbox-strict-fields -}
-
 -----------------------------------------------------------------------------
 -- |
 -- Module      :  Data.SuffixTree
@@ -33,6 +32,8 @@
 -- Estimates are given for performance.  The value /k/ is a constant;
 -- /n/ is the length of a query string; and /t/ is the number of
 -- elements (nodes and leaves) in a suffix tree.
+
+{-# LANGUAGE DeriveFunctor, DeriveFoldable, DeriveTraversable #-}
 
 module Data.SuffixTree
     (
@@ -129,7 +130,7 @@ data PreSTree a = PreNode [PreEdge a]
 
 data STree a = Node [Edge a]
              | Leaf LeafValue
-               deriving (Show)
+               deriving (Show, Functor, Foldable, Traversable)
 
 smap :: (a -> b) -> PreSTree a -> PreSTree b
 smap _ (PreLeaf n) = PreLeaf n
