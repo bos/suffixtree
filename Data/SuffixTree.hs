@@ -396,3 +396,8 @@ countRepeats s t = maybe 0 countLeaves (findTree s t)
 
 listRepeats :: (Eq a) => [a] -> STree a -> [LeafValue]
 listRepeats s t = maybe [] listLeaves (findTree s t)
+
+toList :: STree a -> [([a], LeafValue)]
+toList (Leaf l) = [([], l)]
+toList (Node es) = concatMap (\(p,t) -> map (combine p) (toList t)) es
+    where combine p (a, b) = (p ++ a, b)
