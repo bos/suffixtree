@@ -382,6 +382,10 @@ countLeaves :: STree a -> Int
 countLeaves (Leaf _) = 1
 countLeaves (Node es) = L.foldl' (\v (_, t) -> countLeaves t + v) 0 es
 
+listLeaves :: STree a -> [LeafValue]
+listLeaves (Leaf l) = [l]
+listLeaves (Node es) = concat $ L.foldl' (\v (_, t) -> listLeaves t : v) [] es
+
 -- | /O(n + r)/. Count the number of times a sequence is repeated
 -- in the input sequence that was used to construct the suffix tree.
 --
@@ -389,3 +393,6 @@ countLeaves (Node es) = L.foldl' (\v (_, t) -> countLeaves t + v) 0 es
 -- the number of times /r/ the sequence is repeated.
 countRepeats :: (Eq a) => [a] -> STree a -> Int
 countRepeats s t = maybe 0 countLeaves (findTree s t)
+
+listRepeats :: (Eq a) => [a] -> STree a -> [LeafValue]
+listRepeats s t = maybe [] listLeaves (findTree s t)
