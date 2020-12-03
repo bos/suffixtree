@@ -34,6 +34,7 @@
 -- elements (nodes and leaves) in a suffix tree.
 
 {-# LANGUAGE DeriveFunctor, DeriveFoldable, DeriveTraversable #-}
+{-# LANGUAGE FlexibleContexts #-}
 
 module Data.SuffixTree
     (
@@ -74,6 +75,7 @@ import qualified Data.ByteString as SB
 import qualified Data.ByteString.Lazy as LB
 import qualified Data.List as L
 import Data.Maybe (listToMaybe, mapMaybe)
+import Text.Regex.TDFA (=~)
 
 -- | The length of a prefix list.  This type is formulated to do cheap
 -- work eagerly (to avoid constructing a pile of deferred thunks),
@@ -401,3 +403,9 @@ toList :: STree a -> [([a], LeafValue)]
 toList (Leaf l) = [([], l)]
 toList (Node es) = concatMap (\(p,t) -> map (combine p) (toList t)) es
     where combine p (a, b) = (p ++ a, b)
+
+match :: String -> STree Char -> [(String, LeafValue)]
+match "" _ = []
+match regex t = filter (not . null . fst) (map m $ toList t)
+    where r = if head regex == '^' then regex else '^':regex
+          m x = (fst x =~ r, snd x) :: (String, LeafValue)
