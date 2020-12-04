@@ -418,3 +418,14 @@ countFrequencies t = tail . snd . go id $ t
            go pp (Node es) =
                let (ns, xs) = unzip . map (\(p, t) -> go (pp . (p++)) t) $ es
                in (sum ns, (pp [], sum ns):concat xs)
+
+suffixArray :: STree a -> [Int]
+suffixArray t = l : map ((l-) . length . fst) li
+    where li = toList t
+          l = length li + 1
+
+lcp :: STree a -> [Int]
+lcp t = 0 : go 0 t
+    where go n (Leaf _) = []
+          go n (Node es) = tail . concatMap (f n) $ es
+          f n (p, t) = n: go (n + length p) t
