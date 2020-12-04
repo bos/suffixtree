@@ -75,7 +75,7 @@ import qualified Data.ByteString as SB
 import qualified Data.ByteString.Lazy as LB
 import qualified Data.List as L
 import Data.Maybe (listToMaybe, mapMaybe)
-import Text.Regex.TDFA (=~)
+import Text.Regex.TDFA ((=~))
 
 -- | The length of a prefix list.  This type is formulated to do cheap
 -- work eagerly (to avoid constructing a pile of deferred thunks),
@@ -409,3 +409,12 @@ match "" _ = []
 match regex t = filter (not . null . fst) (map m $ toList t)
     where r = if head regex == '^' then regex else '^':regex
           m x = (fst x =~ r, snd x) :: (String, LeafValue)
+
+countFrequencies :: STree a -> [([a], Int)]
+countFrequencies  (Leaf _) = []
+countFrequencies (Node []) = []
+countFrequencies t = tail . snd . go id $ t
+     where go _ (Leaf _) = (1, [])
+           go pp (Node es) =
+               let (ns, xs) = unzip . map (\(p, t) -> go (pp . (p++)) t) $ es
+               in (sum ns, (pp [], sum ns):concat xs)
