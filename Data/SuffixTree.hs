@@ -74,8 +74,13 @@ import Control.Arrow (second)
 import qualified Data.ByteString as SB
 import qualified Data.ByteString.Lazy as LB
 import qualified Data.List as L
-import Data.Maybe (listToMaybe, mapMaybe)
+import Data.Maybe (listToMaybe, mapMaybe, catMaybes)
 import Text.Regex.TDFA ((=~))
+import Data.List (sort)
+import qualified Data.Map.Strict as MS
+import qualified Data.Set as S
+import qualified Data.Vector as V
+import Data.Vector ((!))
 
 -- | The length of a prefix list.  This type is formulated to do cheap
 -- work eagerly (to avoid constructing a pile of deferred thunks),
@@ -429,3 +434,52 @@ lcp t = 0 : go 0 t
     where go n (Leaf _) = []
           go n (Node es) = tail . concatMap (f n) $ es
           f n (p, t) = n: go (n + length p) t
+
+-- https://arxiv.org/pdf/1304.0528.pdf
+-- n := |w|
+-- r := suffix array of w ; Int -> LeafValue
+-- p := inverse permutation of r ; LeafValue -> Int
+-- LCP := lowest common prefix array ; Int -> Int
+-- S := indices of w already seen ; S.Set Int
+-- I := permutation of [0, n-1] such that LCP[I[i]] <= LCP[I[i+1]]; [Int]
+-- initial := min {t : LCP[I[t]] >= ml} ; index of I; Int (loop variable)
+-- t := initial to n - 1 ; Int (like initial)
+
+findmaxr :: Eq a => [[a]] -> STree a -> Int -> [([LeafValue], Int)]
+findmaxr strs t ml = catMaybes . map findmaxrStep $ zip ss iArr
+    where ls = map length strs
+          strV = V.fromList . map V.fromList $ strs
+          w (a, b) = (strV ! a) ! b
+          ints = [0..] :: [Int]
+          suf = map snd . toList $ t
+          r = V.fromList suf
+          makeIndex a b = map (\n -> (a, n)) [0..b-1]
+          is = concat $ zipWith makeIndex ints ls
+          invPerm xs = MS.fromList $ zip xs ints
+          invSuf = invPerm suf
+          lookupP a = a `MS.lookup` invSuf
+          lcpList = lcp t
+          lcpV = V.fromList lcpList
+          (lowS, iArr) = span ((< ml) . fst) . sort $ zip lcpList ints 
+          startS = S.fromList . map snd $ lowS
+          ss = L.scanl' (flip S.insert) startS (map snd iArr)
+          findmaxrStep (s, (lcpIt, i)) = 
+              let pi = S.lookupLT i s
+                  ni = S.lookupGT i s
+                  checkLcp = maybe True (\a -> (lcpV ! a /= lcpIt))
+                  maxRight = checkLcp pi && checkLcp ni
+                  p = maybe 0 id pi
+                  n = maybe (V.length r - 1) (subtract 1) ni
+                  rp = r ! p
+                  rn = r ! n
+                  oneLeft (a, b) = (a, b - 1)
+                  prn1 = lookupP . oneLeft $ rn
+                  prp1 = lookupP . oneLeft $ rp
+                  diffPs = case (prn1, prp1) of
+                      (Just a, Just b) -> a - b /= n - p
+                      _ -> True
+                  maxLeft = snd rp == 0 || snd rn == 0 
+                      || w (oneLeft rp) /= w (oneLeft rn) 
+                      || diffPs
+                  reps = (map (r !) [p..n], lcpIt)
+              in if maxRight && maxLeft then Just reps else Nothing
