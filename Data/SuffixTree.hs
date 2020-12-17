@@ -1,5 +1,4 @@
 {- Fastest when compiled as follows: ghc -O2 -optc-O3 -funbox-strict-fields -}
-
 -----------------------------------------------------------------------------
 -- |
 -- Module      :  Data.SuffixTree
@@ -34,6 +33,9 @@
 -- /n/ is the length of a query string; and /t/ is the number of
 -- elements (nodes and leaves) in a suffix tree.
 
+{-# LANGUAGE DeriveFunctor, DeriveFoldable, DeriveTraversable #-}
+{-# LANGUAGE FlexibleContexts #-}
+
 module Data.SuffixTree
     (
     -- * Types
@@ -67,11 +69,18 @@ module Data.SuffixTree
                    
 import Prelude hiding (elem, foldl, foldr)
 import qualified Data.Map as M
+import Data.Either (rights)
 import Control.Arrow (second)
 import qualified Data.ByteString as SB
 import qualified Data.ByteString.Lazy as LB
 import qualified Data.List as L
-import Data.Maybe (listToMaybe, mapMaybe)
+import Data.Maybe (listToMaybe, mapMaybe, catMaybes)
+import Text.Regex.TDFA ((=~))
+import Data.List (sort)
+import qualified Data.Map.Strict as MS
+import qualified Data.Set as S
+import qualified Data.Vector as V
+import Data.Vector ((!))
 
 -- | The length of a prefix list.  This type is formulated to do cheap
 -- work eagerly (to avoid constructing a pile of deferred thunks),
@@ -98,10 +107,16 @@ instance (Ord a) => Ord (Prefix a) where
 instance (Show a) => Show (Prefix a) where
     show a = "mkPrefix " ++ show (prefix a)
 
-type EdgeFunction a = [[a]] -> (Length a, [[a]])
+type EdgeFunction a = [Suffix a] -> (Length a, [Suffix a])
+
+type Suffix a = ([a], LeafValue)
+
+type LeafValue = (Int, Int)
+
+type PreEdge a = (Prefix a, PreSTree a)
 
 -- | An edge in the suffix tree.
-type Edge a = (Prefix a, STree a)
+type Edge a = ([a], STree a)
 
 -- | /O(1)/. Construct a 'Prefix' value.
 mkPrefix :: [a] -> Prefix a
@@ -115,16 +130,20 @@ instance Functor Prefix where
 
 -- | The suffix tree type.  The implementation is exposed to ease the
 -- development of custom traversal functions.  Note that @('Prefix' a,
--- 'STree' a)@ pairs are not stored in any order.
+-- 'PreSTree' a)@ pairs are not stored in any order.
+data PreSTree a = PreNode [PreEdge a]
+                | PreLeaf LeafValue
+                  deriving (Show)
+
 data STree a = Node [Edge a]
-             | Leaf
-               deriving (Show)
+             | Leaf LeafValue
+               deriving (Show, Functor, Foldable, Traversable)
 
-smap :: (a -> b) -> STree a -> STree b
-smap _ Leaf = Leaf
-smap f (Node es) = Node (map (\(p, t) -> (fmap f p, smap f t)) es)
+smap :: (a -> b) -> PreSTree a -> PreSTree b
+smap _ (PreLeaf n) = PreLeaf n
+smap f (PreNode es) = PreNode (map (\(p, t) -> (fmap f p, smap f t)) es)
 
-instance Functor STree where
+instance Functor PreSTree where
     fmap = smap
 
 -- | /O(n)/. Obtain the list stored in a 'Prefix'.
@@ -136,18 +155,18 @@ prefix (Prefix (ys, Sum n xs)) = tk n ys
 
 -- | /O(t)/. Folds the edges in a tree, using post-order traversal.
 -- Suitable for lazy use.
-foldr :: (Prefix a -> b -> b) -> b -> STree a -> b
-foldr _ z Leaf = z
-foldr f z (Node es) = L.foldr (\(p,t) v -> f p (foldr f v t)) z es
+foldr :: (Prefix a -> b -> b) -> b -> PreSTree a -> b
+foldr _ z (PreLeaf n) = z
+foldr f z (PreNode es) = L.foldr (\(p,t) v -> f p (foldr f v t)) z es
 
 -- | /O(t)/. Folds the edges in a tree, using pre-order traversal.  The
 -- step function is evaluated strictly.
 foldl :: (a -> Prefix b -> a)   -- ^ step function (evaluated strictly)
       -> a                      -- ^ initial state
-      -> STree b
+      -> PreSTree b
       -> a
-foldl _ z Leaf = z
-foldl f z (Node es) = L.foldl' (\v (p,t) -> f (foldl f v t) p) z es
+foldl _ z (PreLeaf n) = z
+foldl f z (PreNode es) = L.foldl' (\v (p,t) -> f (foldl f v t) p) z es
 
 -- | /O(t)/. Generic fold over a tree.
 --
@@ -167,7 +186,7 @@ foldl f z (Node es) = L.foldl' (\v (p,t) -> f (foldl f v t) p) z es
 -- @
 -- 
 -- @
---gentree :: 'STree' a -> GenTree a Int
+--gentree :: 'PreSTree' a -> GenTree a Int
 --gentree = 'fold' reset id fprefix reset leaf
 --    where leaf = GenLeaf 1
 --          reset = 'const' leaf
@@ -177,13 +196,13 @@ foldl f z (Node es) = L.foldl' (\v (p,t) -> f (foldl f v t) p) z es
 fold :: (a -> a)                -- ^ downwards state transformer
      -> (a -> a)                -- ^ upwards state transformer
      -> (Prefix b -> a -> a -> a) -- ^ edge state transformer
-     -> (a -> a)                -- ^ leaf state transformer
+     -> (a -> LeafValue -> a)                -- ^ leaf state transformer
      -> a                       -- ^ initial state
-     -> STree b                 -- ^ tree
+     -> PreSTree b                 -- ^ tree
      -> a
 fold fdown fup fprefix fleaf = go
-    where go v Leaf = fleaf v
-          go v (Node es) = fup (L.foldr edge v es)
+    where go v (PreLeaf n) = fleaf v n
+          go v (PreNode es) = fup (L.foldr edge v es)
           edge (p, t) v = fprefix p (go (fdown v) t) v
 
 -- | Increments the length of a prefix.
@@ -191,14 +210,25 @@ inc :: Length a -> Length a
 inc (Exactly n) = Exactly (n+1)
 inc (Sum n xs)  = Sum (n+1) xs
 
-lazyTreeWith :: (Eq a) => EdgeFunction a -> Alphabet a -> [a] -> STree a
-lazyTreeWith edge alphabet = suf . suffixes
-    where suf [[]] = Leaf
-          suf ss = Node [(Prefix (a:sa, inc cpl), suf ssr)
-                         | a <- alphabet,
-                           n@(sa:_) <- [ss `clusterBy` a],
+removeEithers :: PreSTree (Either Int a) -> STree a
+removeEithers (PreLeaf l) = Leaf l
+removeEithers (PreNode es) = Node $ map (\(p, t) -> (f p, removeEithers t)) es
+    where f = rights . prefix
+
+terminatedSuffixes :: Int -> [a] -> [Suffix (Either Int a)]
+terminatedSuffixes n xs = zip (init . init . L.tails $ rs) ps
+    where ps = map (\i -> (n, i)) ([0..] :: [Int])
+          rs = map Right xs ++ [Left n]
+
+lazyTreeWith :: (Eq a) => EdgeFunction (Either Int a) -> Alphabet a -> [[a]] -> STree a
+lazyTreeWith edge alphabet xss = removeEithers . suf . concat . (zipWith terminatedSuffixes [0..]) $ xss
+    where alphabet' = map Right alphabet ++ (map Left [0..(length xss - 1)])
+          suf [([], j)] = (PreLeaf j)
+          suf ss = PreNode [(Prefix (a:sa, inc cpl), suf ssr)
+                         | a <- alphabet',
+                           n@((sa,j):_) <- [ss `clusterBy` a],
                            (cpl,ssr) <- [edge n]]
-          clusterBy ss a = [cs | c:cs <- ss, c == a]
+          clusterBy ss a = [(cs,j) | (c:cs,j) <- ss, c == a]
 
 -- | /O(n)/. Returns all non-empty suffixes of the argument, longest
 -- first.  Behaves as follows:
@@ -208,37 +238,38 @@ suffixes :: [a] -> [[a]]
 suffixes xs@(_:xs') = xs : suffixes xs'
 suffixes _ = []
 
-lazyTree :: (Ord a) => EdgeFunction a -> [a] -> STree a
-lazyTree edge = suf . suffixes
-    where suf [[]] = Leaf
-          suf ss = Node [(Prefix (a:sa, inc cpl), suf ssr)
-                         | (a, n@(sa:_)) <- suffixMap ss,
+lazyTree :: (Ord a) => EdgeFunction (Either Int a) -> [[a]] -> STree a
+lazyTree edge = removeEithers . suf . concat . (zipWith terminatedSuffixes [0..])
+    where suf [([], j)] = PreLeaf j
+          suf ss = PreNode [(Prefix (a:sa, inc cpl), suf ssr)
+                         | (a, n@((sa, j):_)) <- suffixMap ss,
                            (cpl,ssr) <- [edge n]]
 
-suffixMap :: Ord a => [[a]] -> [(a, [[a]])]
-suffixMap = map (second reverse) . M.toList . L.foldl' step M.empty
-    where step m (x:xs) = M.alter (f xs) x m
+suffixMap :: Ord a => [Suffix a] -> [(a, [Suffix a])]
+suffixMap =  map (second reverse) . M.toList . L.foldl' step M.empty
+    where step :: Ord a => M.Map a [Suffix a] -> Suffix a -> M.Map a [Suffix a] 
+          step m (x:xs,j) = M.alter (f j xs) x m
           step m _ = m
-          f x Nothing = Just [x]
-          f x (Just xs) = Just (x:xs)
+          f j x Nothing = Just [(x, j)]
+          f j x (Just xs) = Just ((x,j):xs)
 
 cst :: Eq a => EdgeFunction a
-cst [s] = (Sum 0 s, [[]])
-cst awss@((a:w):ss)
-    | null [c | c:_ <- ss, a /= c] = let cpl' = inc cpl
-                                     in seq cpl' (cpl', rss)
+cst [(s, j)] = (Sum 0 s, [([], j)])
+cst awss@((a:w,j):ss)
+    | null [c | (c:_,_) <- ss, a /= c] = let cpl' = inc cpl
+                                         in seq cpl' (cpl', rss)
     | otherwise = (Exactly 0, awss)
-    where (cpl, rss) = cst (w:[u | _:u <- ss])
+    where (cpl, rss) = cst ((w,j):[(u,j') | (_:u,j') <- ss])
 
 pst :: Eq a => EdgeFunction a
 pst = g . dropNested
-    where g [s] = (Sum 0 s, [[]])
+    where g [(s,j)] = (Sum 0 s, [([], j)])
           g ss  = (Exactly 0, ss)
           dropNested ss@[_] = ss
-          dropNested awss@((a:w):ss)
-              | null [c | c:_ <- ss, a /= c] = [a:s | s <- rss]
+          dropNested awss@((a:w,j):ss)
+              | null [c | ((c:_),_) <- ss, a /= c] = [(a:s,j') | (s,j') <- rss]
               | otherwise = awss
-              where rss = dropNested (w:[u | _:u <- ss])
+              where rss = dropNested ((w,j):[(u,j') | (_:u,j') <- ss])
 
 {-# SPECIALISE constructWith :: [Char] -> [Char] -> STree Char #-}
 {-# SPECIALISE constructWith :: [[Char]] -> [[Char]] -> STree [Char] #-}
@@ -255,7 +286,10 @@ pst = g . dropNested
 -- more than a few symbols, 'construct' is usually several orders of
 -- magnitude faster.
 constructWith :: (Eq a) => Alphabet a -> [a] -> STree a
-constructWith = lazyTreeWith cst
+constructWith alphabet xs = lazyTreeWith cst alphabet [xs]
+
+constructGeneralWith :: (Eq a) => Alphabet a -> [[a]] -> STree a
+constructGeneralWith = lazyTreeWith cst
 
 {-# SPECIALISE construct :: [Char] -> STree Char #-}
 {-# SPECIALISE construct :: [[Char]] -> STree [Char] #-}
@@ -265,7 +299,10 @@ constructWith = lazyTreeWith cst
 
 -- | /O(n log n)/.  Constructs a suffix tree.
 construct :: (Ord a) => [a] -> STree a
-construct = lazyTree cst
+construct xs = lazyTree cst [xs]
+
+constructGeneral :: (Ord a) => [[a]] -> STree a
+constructGeneral = lazyTree cst
 
 suffix :: (Eq a) => [a] -> [a] -> Maybe [a]
 suffix (p:ps) (x:xs) | p == x = suffix ps xs
@@ -283,9 +320,9 @@ suffix _ xs = Just xs
 -- sublist.
 elem :: (Eq a) => [a] -> STree a -> Bool
 elem [] _ = True
-elem _ Leaf = False
+elem _ (Leaf _) = False
 elem xs (Node es) = any pfx es
-    where pfx (e, t) = maybe False (`elem` t) (suffix (prefix e) xs)
+    where pfx (e, t) = maybe False (`elem` t) (suffix e xs)
 
 {-# SPECIALISE findEdge :: [Char] -> STree Char
                         -> Maybe (Edge Char, Int) #-}
@@ -306,21 +343,20 @@ elem xs (Node es) = any pfx es
 --
 -- Here is an example:
 --
--- >> find "ssip" (construct "mississippi")
--- >Just ((mkPrefix "ppi",Leaf),1)
+-- >> findEdge "ssip" (construct "mississippi")
+-- >Just (("ppi",Leaf),1)
 --
--- This indicates that the edge @('mkPrefix' \"ppi\",'Leaf')@ matches,
+-- This indicates that the edge @(\"ppi\",'Leaf')@ matches,
 -- and that we must strip 1 character from the string @\"ppi\"@ to get
 -- the remaining prefix string @\"pi\"@.
 --
 -- Performance is linear in the length /n/ of the query list.
 findEdge :: (Eq a) => [a] -> STree a -> Maybe (Edge a, Int)
-findEdge _ Leaf = Nothing
+findEdge _ (Leaf _) = Nothing
 findEdge xs (Node es) = listToMaybe (mapMaybe pfx es)
-    where pfx e@(p, t) = let p' = prefix p
-                         in suffix p' xs >>= \suf ->
+    where pfx e@(p, t) = suffix p xs >>= \suf ->
             case suf of
-              [] -> return (e, length (zipWith const xs p'))
+              [] -> return (e, length (zipWith const xs p))
               s -> findEdge s t
 
 -- | /O(n)/. Finds the subtree rooted at the end of the given query
@@ -337,11 +373,11 @@ findTree s t = (snd . fst) `fmap` findEdge s t
 -- Performance is linear in the length of the query list.
 findPath :: (Eq a) => [a] -> STree a -> [Edge a]
 findPath = go []
-    where go _ _ Leaf = []
+    where go _ _ (Leaf _) = []
           go me xs (Node es) = pfx me es
               where pfx _ [] = []
                     pfx me (e@(p, t):es) =
-                        case suffix (prefix p) xs of
+                        case suffix p xs of
                           Nothing -> pfx me es
                           Just [] -> e:me
                           Just s -> go (e:me) s t
@@ -350,8 +386,12 @@ findPath = go []
 --
 -- Performance is linear in the number /t/ of elements in the tree.
 countLeaves :: STree a -> Int
-countLeaves Leaf = 1
+countLeaves (Leaf _) = 1
 countLeaves (Node es) = L.foldl' (\v (_, t) -> countLeaves t + v) 0 es
+
+listLeaves :: STree a -> [LeafValue]
+listLeaves (Leaf l) = [l]
+listLeaves (Node es) = concat $ L.foldl' (\v (_, t) -> listLeaves t : v) [] es
 
 -- | /O(n + r)/. Count the number of times a sequence is repeated
 -- in the input sequence that was used to construct the suffix tree.
@@ -360,3 +400,86 @@ countLeaves (Node es) = L.foldl' (\v (_, t) -> countLeaves t + v) 0 es
 -- the number of times /r/ the sequence is repeated.
 countRepeats :: (Eq a) => [a] -> STree a -> Int
 countRepeats s t = maybe 0 countLeaves (findTree s t)
+
+listRepeats :: (Eq a) => [a] -> STree a -> [LeafValue]
+listRepeats s t = maybe [] listLeaves (findTree s t)
+
+toList :: STree a -> [([a], LeafValue)]
+toList (Leaf l) = [([], l)]
+toList (Node es) = concatMap (\(p,t) -> map (combine p) (toList t)) es
+    where combine p (a, b) = (p ++ a, b)
+
+match :: String -> STree Char -> [(String, LeafValue)]
+match "" _ = []
+match regex t = filter (not . null . fst) (map m $ toList t)
+    where r = if head regex == '^' then regex else '^':regex
+          m x = (fst x =~ r, snd x) :: (String, LeafValue)
+
+countFrequencies :: STree a -> [([a], Int)]
+countFrequencies  (Leaf _) = []
+countFrequencies (Node []) = []
+countFrequencies t = tail . snd . go id $ t
+     where go _ (Leaf _) = (1, [])
+           go pp (Node es) =
+               let (ns, xs) = unzip . map (\(p, t) -> go (pp . (p++)) t) $ es
+               in (sum ns, (pp [], sum ns):concat xs)
+
+suffixArray :: STree a -> [Int]
+suffixArray t = l : map ((l-) . length . fst) li
+    where li = toList t
+          l = length li + 1
+
+lcp :: STree a -> [Int]
+lcp t = 0 : go 0 t
+    where go n (Leaf _) = []
+          go n (Node es) = tail . concatMap (f n) $ es
+          f n (p, t) = n: go (n + length p) t
+
+-- https://arxiv.org/pdf/1304.0528.pdf
+-- n := |w|
+-- r := suffix array of w ; Int -> LeafValue
+-- p := inverse permutation of r ; LeafValue -> Int
+-- LCP := lowest common prefix array ; Int -> Int
+-- S := indices of w already seen ; S.Set Int
+-- I := permutation of [0, n-1] such that LCP[I[i]] <= LCP[I[i+1]]; [Int]
+-- initial := min {t : LCP[I[t]] >= ml} ; index of I; Int (loop variable)
+-- t := initial to n - 1 ; Int (like initial)
+
+findmaxr :: Eq a => [[a]] -> STree a -> Int -> [([LeafValue], Int)]
+findmaxr strs t ml = catMaybes . map findmaxrStep $ zip ss iArr
+    where ls = map length strs
+          strV = V.fromList . map V.fromList $ strs
+          w (a, b) = (strV ! a) ! b
+          ints = [0..] :: [Int]
+          suf = map snd . toList $ t
+          r = V.fromList suf
+          makeIndex a b = map (\n -> (a, n)) [0..b-1]
+          is = concat $ zipWith makeIndex ints ls
+          invPerm xs = MS.fromList $ zip xs ints
+          invSuf = invPerm suf
+          lookupP a = a `MS.lookup` invSuf
+          lcpList = lcp t
+          lcpV = V.fromList lcpList
+          (lowS, iArr) = span ((< ml) . fst) . sort $ zip lcpList ints 
+          startS = S.fromList . map snd $ lowS
+          ss = L.scanl' (flip S.insert) startS (map snd iArr)
+          findmaxrStep (s, (lcpIt, i)) = 
+              let pi = S.lookupLT i s
+                  ni = S.lookupGT i s
+                  checkLcp = maybe True (\a -> (lcpV ! a /= lcpIt))
+                  maxRight = checkLcp pi && checkLcp ni
+                  p = maybe 0 id pi
+                  n = maybe (V.length r - 1) (subtract 1) ni
+                  rp = r ! p
+                  rn = r ! n
+                  oneLeft (a, b) = (a, b - 1)
+                  prn1 = lookupP . oneLeft $ rn
+                  prp1 = lookupP . oneLeft $ rp
+                  diffPs = case (prn1, prp1) of
+                      (Just a, Just b) -> a - b /= n - p
+                      _ -> True
+                  maxLeft = snd rp == 0 || snd rn == 0 
+                      || w (oneLeft rp) /= w (oneLeft rn) 
+                      || diffPs
+                  reps = (map (r !) [p..n], lcpIt)
+              in if maxRight && maxLeft then Just reps else Nothing
